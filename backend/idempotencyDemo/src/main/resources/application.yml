@@ -1,0 +1,9 @@
+server:
+  port: 8080
+
+stripe:
+  secret-key: ${STRIPE_SECRET_KEY}
+  price-id: ${STRIPE_PRICE_ID}
+
+app:
+  frontend-url: http://localhost:5173

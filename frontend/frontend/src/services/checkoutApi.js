@@ -1,5 +1,13 @@
 const CHECKOUT_API_URL = 'http://localhost:8080/api/checkout/sessions'
 
+class CheckoutApiError extends Error {
+  constructor(message, response) {
+    super(message)
+    this.name = 'CheckoutApiError'
+    this.response = response
+  }
+}
+
 export async function createCheckoutSession({
   orderId,
   quantity,
@@ -26,15 +34,16 @@ export async function createCheckoutSession({
 
   if (!response.ok) {
     let message = 'Checkout request failed.'
+    let errorResponse = null
 
     try {
-      const errorBody = await response.json()
-      message = errorBody.message || message
+      errorResponse = await response.json()
+      message = errorResponse.message || message
     } catch {
       // Keep the fallback message when the response body is not JSON.
     }
 
-    throw new Error(message)
+    throw new CheckoutApiError(message, errorResponse)
   }
 
   return response.json()

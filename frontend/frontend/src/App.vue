@@ -39,13 +39,17 @@ async function runSimulation() {
       idempotencyKey: requestIdempotencyKey,
     })
       .then((response) => {
+        const requestStatus = response.requestStatus || 'CREATED'
         const log = {
           id: `${requestNumber}-${response.stripeSessionId}`,
           requestNumber: response.requestNumber,
-          status: 'completed',
-          message: response.idempotencyUsed
-            ? 'Stripe returned a session using the supplied idempotency key.'
-            : 'Stripe created a session without idempotency protection.',
+          status: requestStatus,
+          message:
+            requestStatus === 'REPLAYED'
+              ? 'Previously stored checkout response was returned without calling Stripe again.'
+              : response.idempotencyUsed
+                ? 'Stripe returned a session using the supplied idempotency key.'
+                : 'Stripe created a session without idempotency protection.',
           sessionId: response.stripeSessionId,
         }
 
@@ -54,6 +58,27 @@ async function runSimulation() {
         )
       })
       .catch((error) => {
+        const backendResponse = error.response
+        const requestStatus = backendResponse?.requestStatus
+
+        if (requestStatus === 'PROCESSING' || requestStatus === 'CONFLICT') {
+          const log = {
+            id: `${requestNumber}-${requestStatus.toLowerCase()}`,
+            requestNumber: backendResponse.requestNumber ?? requestNumber,
+            status: requestStatus,
+            message:
+              requestStatus === 'PROCESSING'
+                ? 'Another request with the same idempotency key is still being processed.'
+                : 'The same idempotency key was reused with different request data.',
+            sessionId: 'Not created',
+          }
+
+          logs.value = [...logs.value, log].sort(
+            (left, right) => left.requestNumber - right.requestNumber
+          )
+          return
+        }
+
         const log = {
           id: `${requestNumber}-error`,
           requestNumber,

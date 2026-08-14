@@ -4,6 +4,10 @@ import com.stripe.exception.StripeException;
 import com.stripe.model.checkout.Session;
 import com.stripe.net.RequestOptions;
 import com.stripe.param.checkout.SessionCreateParams;
+import com.harman.idempotencyDemo.idempotency.IdempotencyAcquireResult;
+import com.harman.idempotencyDemo.idempotency.IdempotencyAcquireStatus;
+import com.harman.idempotencyDemo.idempotency.IdempotencyService;
+import com.harman.idempotencyDemo.idempotency.RequestHasher;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -11,15 +15,23 @@ import org.springframework.util.StringUtils;
 @Service
 public class CheckoutService {
 
+	private static final String CHECKOUT_OPERATION = "CHECKOUT_SESSION_CREATE";
+
 	private final String priceId;
 	private final String frontendUrl;
+	private final RequestHasher requestHasher;
+	private final IdempotencyService idempotencyService;
 
 	public CheckoutService(
 			@Value("${stripe.price-id}") String priceId,
-			@Value("${app.frontend-url}") String frontendUrl
+			@Value("${app.frontend-url}") String frontendUrl,
+			RequestHasher requestHasher,
+			IdempotencyService idempotencyService
 	) {
 		this.priceId = priceId;
 		this.frontendUrl = frontendUrl;
+		this.requestHasher = requestHasher;
+		this.idempotencyService = idempotencyService;
 	}
 
 	public CheckoutResponse createCheckoutSession(
@@ -43,21 +55,91 @@ public class CheckoutService {
 		boolean idempotencyUsed = StringUtils.hasText(idempotencyKey);
 		String normalizedIdempotencyKey = idempotencyUsed ? idempotencyKey.trim() : null;
 
-		Session session = idempotencyUsed
-				? Session.create(
-						params,
-						RequestOptions.builder()
-								.setIdempotencyKey(normalizedIdempotencyKey)
-								.build()
-				)
-				: Session.create(params);
+		if (!idempotencyUsed) {
+			return createStripeCheckoutResponse(
+					requestNumber,
+					normalizedIdempotencyKey,
+					false,
+					"CREATED",
+					Session.create(params)
+			);
+		}
 
+		// Calculate the request hash
+		String requestHash = requestHasher.hash(request);
+		// Acquire the idempotency key
+		IdempotencyAcquireResult acquireResult = idempotencyService.acquire(
+				CHECKOUT_OPERATION,
+				normalizedIdempotencyKey,
+				requestHash
+		);
+		// Check if the request is a replay
+		if (acquireResult.status() == IdempotencyAcquireStatus.REPLAY) {
+			CheckoutResponse replayResponse = acquireResult.replayResponse();
+			return new CheckoutResponse(
+					requestNumber,
+					replayResponse.stripeSessionId(),
+					replayResponse.checkoutUrl(),
+					true,
+					normalizedIdempotencyKey,
+					"REPLAYED"
+			);
+		}
+
+		if (acquireResult.status() == IdempotencyAcquireStatus.IN_PROGRESS) {
+			return new CheckoutResponse(
+					requestNumber,
+					null,
+					null,
+					true,
+					normalizedIdempotencyKey,
+					"PROCESSING"
+			);
+		}
+
+		if (acquireResult.status() == IdempotencyAcquireStatus.CONFLICT) {
+			return new CheckoutResponse(
+					requestNumber,
+					null,
+					null,
+					true,
+					normalizedIdempotencyKey,
+					"CONFLICT"
+			);
+		}
+
+		Session session = Session.create(
+				params,
+				RequestOptions.builder()
+						.setIdempotencyKey(normalizedIdempotencyKey)
+						.build()
+		);
+
+		CheckoutResponse response = createStripeCheckoutResponse(
+				requestNumber,
+				normalizedIdempotencyKey,
+				true,
+				"CREATED",
+				session
+		);
+		idempotencyService.saveSucceeded(acquireResult.record(), 200, response);
+		return response;
+	}
+
+	private CheckoutResponse createStripeCheckoutResponse(
+			int requestNumber,
+			String idempotencyKey,
+			boolean idempotencyUsed,
+			String requestStatus,
+			Session session
+	) {
 		return new CheckoutResponse(
 				requestNumber,
 				session.getId(),
 				session.getUrl(),
 				idempotencyUsed,
-				normalizedIdempotencyKey
+				idempotencyKey,
+				requestStatus
 		);
 	}
 

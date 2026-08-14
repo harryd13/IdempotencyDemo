@@ -5,6 +5,7 @@ public record CheckoutResponse(
 		String stripeSessionId,
 		String checkoutUrl,
 		boolean idempotencyUsed,
-		String idempotencyKey
+		String idempotencyKey,
+		String requestStatus
 ) {
 }

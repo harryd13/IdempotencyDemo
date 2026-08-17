@@ -57,6 +57,9 @@ public class IdempotencyRecord {
 	@Column(name = "updated_at", nullable = false)
 	private Instant updatedAt;
 
+	@Column(name = "locked_until")
+	private Instant lockedUntil;
+
 	@Column(name = "expires_at", nullable = false)
 	private Instant expiresAt;
 

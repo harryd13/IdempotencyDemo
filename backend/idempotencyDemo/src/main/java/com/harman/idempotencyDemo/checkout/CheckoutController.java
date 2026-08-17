@@ -24,15 +24,19 @@ public class CheckoutController {
 	public ResponseEntity<CheckoutResponse> createCheckoutSession(
 			@Valid @RequestBody CreateCheckoutRequest request,
 			@RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
-			@RequestHeader(name = "X-Demo-Request-Number", defaultValue = "1") int requestNumber
+			@RequestHeader(name = "X-Demo-Request-Number", defaultValue = "1") int requestNumber,
+			@RequestHeader(name = "X-Demo-Delay-Ms", required = false) Long demoDelayMs
 	) throws StripeException {
 		CheckoutResponse response = checkoutService.createCheckoutSession(
 				request,
 				idempotencyKey,
-				requestNumber
+				requestNumber,
+				demoDelayMs
 		);
 
-		if ("PROCESSING".equals(response.requestStatus()) || "CONFLICT".equals(response.requestStatus())) {
+		if ("PROCESSING".equals(response.requestStatus())
+				|| "CONFLICT".equals(response.requestStatus())
+				|| "RECOVERY_REQUIRED".equals(response.requestStatus())) {
 			return ResponseEntity.status(HttpStatus.CONFLICT).body(response);
 		}
 

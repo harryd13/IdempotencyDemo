@@ -1,6 +1,8 @@
 package com.harman.idempotencyDemo.idempotency;
 
 import com.harman.idempotencyDemo.checkout.CheckoutResponse;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
@@ -13,11 +15,23 @@ import org.springframework.transaction.annotation.Transactional;
 public class IdempotencyService {
 
 	private static final Duration RECORD_TTL = Duration.ofHours(24);
+	private static final Duration PROCESSING_LEASE_DURATION = Duration.ofMinutes(2);
 
 	private final IdempotencyRepository idempotencyRepository;
+	private final Counter createdCounter;
+	private final Counter replayedCounter;
+	private final Counter processingCounter;
+	private final Counter conflictCounter;
 
-	public IdempotencyService(IdempotencyRepository idempotencyRepository) {
+	public IdempotencyService(
+			IdempotencyRepository idempotencyRepository,
+			MeterRegistry meterRegistry
+	) {
 		this.idempotencyRepository = idempotencyRepository;
+		this.createdCounter = meterRegistry.counter("idempotency.created");
+		this.replayedCounter = meterRegistry.counter("idempotency.replayed");
+		this.processingCounter = meterRegistry.counter("idempotency.processing");
+		this.conflictCounter = meterRegistry.counter("idempotency.conflict");
 	}
 
 	@Transactional
@@ -28,6 +42,7 @@ public class IdempotencyService {
 	) {
 		Instant now = Instant.now();
 		Instant expiresAt = now.plus(RECORD_TTL);
+		Instant lockedUntil = now.plus(PROCESSING_LEASE_DURATION);
 
 		int inserted = idempotencyRepository.insertProcessingRecord(
 				UUID.randomUUID(),
@@ -35,6 +50,7 @@ public class IdempotencyService {
 				idempotencyKey,
 				requestHash,
 				IdempotencyStatus.PROCESSING.name(),
+				lockedUntil,
 				now,
 				now,
 				expiresAt
@@ -44,6 +60,7 @@ public class IdempotencyService {
 			IdempotencyRecord record = idempotencyRepository
 					.findByOperationAndIdempotencyKey(operation, idempotencyKey)
 					.orElseThrow(() -> new IllegalStateException("Inserted idempotency record was not found"));
+			createdCounter.increment();
 			return new IdempotencyAcquireResult(
 					IdempotencyAcquireStatus.ACQUIRED,
 					record,
@@ -65,6 +82,7 @@ public class IdempotencyService {
 			CheckoutResponse response
 	) {
 		record.setStatus(IdempotencyStatus.SUCCEEDED);
+		record.setLockedUntil(null);
 		record.setResponseStatus(responseStatus);
 		record.setResponseBody(serialize(response));
 		record.setStripeSessionId(response.stripeSessionId());
@@ -76,6 +94,7 @@ public class IdempotencyService {
 			String requestHash
 	) {
 		if (!record.getRequestHash().equals(requestHash)) {
+			conflictCounter.increment();
 			return new IdempotencyAcquireResult(
 					IdempotencyAcquireStatus.CONFLICT,
 					record,
@@ -84,6 +103,7 @@ public class IdempotencyService {
 		}
 
 		if (record.getStatus() == IdempotencyStatus.SUCCEEDED) {
+			replayedCounter.increment();
 			return new IdempotencyAcquireResult(
 					IdempotencyAcquireStatus.REPLAY,
 					record,
@@ -92,8 +112,18 @@ public class IdempotencyService {
 		}
 
 		if (record.getStatus() == IdempotencyStatus.PROCESSING) {
+			Instant lockExpiry = record.getLockedUntil();
+			if (lockExpiry != null && lockExpiry.isAfter(Instant.now())) {
+				processingCounter.increment();
+				return new IdempotencyAcquireResult(
+						IdempotencyAcquireStatus.IN_PROGRESS,
+						record,
+						null
+				);
+			}
+
 			return new IdempotencyAcquireResult(
-					IdempotencyAcquireStatus.IN_PROGRESS,
+					IdempotencyAcquireStatus.RECOVERY_REQUIRED,
 					record,
 					null
 			);

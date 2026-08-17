@@ -9,12 +9,19 @@ spring:
     hibernate:
       ddl-auto: update
 
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+
 server:
   port: 8080
 
 stripe:
   secret-key: ${STRIPE_SECRET_KEY}
   price-id: ${STRIPE_PRICE_ID}
+  webhook-secret: ${STRIPE_WEBHOOK_SECRET}
 
 app:
   frontend-url: http://localhost:5173

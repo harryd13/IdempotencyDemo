@@ -16,6 +16,7 @@ import org.springframework.util.StringUtils;
 public class CheckoutService {
 
 	private static final String CHECKOUT_OPERATION = "CHECKOUT_SESSION_CREATE";
+	private static final long MAX_DEMO_DELAY_MS = 5000L;
 
 	private final String priceId;
 	private final String frontendUrl;
@@ -37,7 +38,8 @@ public class CheckoutService {
 	public CheckoutResponse createCheckoutSession(
 			CreateCheckoutRequest request,
 			String idempotencyKey,
-			int requestNumber
+			int requestNumber,
+			Long demoDelayMs
 	) throws StripeException {
 		SessionCreateParams params = SessionCreateParams.builder()
 				.setMode(SessionCreateParams.Mode.PAYMENT)
@@ -108,6 +110,19 @@ public class CheckoutService {
 			);
 		}
 
+		if (acquireResult.status() == IdempotencyAcquireStatus.RECOVERY_REQUIRED) {
+			return new CheckoutResponse(
+					requestNumber,
+					null,
+					null,
+					true,
+					normalizedIdempotencyKey,
+					"RECOVERY_REQUIRED"
+			);
+		}
+
+		applyDemoDelayIfEnabled(demoDelayMs);
+
 		Session session = Session.create(
 				params,
 				RequestOptions.builder()
@@ -141,6 +156,21 @@ public class CheckoutService {
 				idempotencyKey,
 				requestStatus
 		);
+	}
+
+	private void applyDemoDelayIfEnabled(Long demoDelayMs) {
+		if (demoDelayMs == null || demoDelayMs <= 0) {
+			return;
+		}
+
+		long boundedDelayMs = Math.min(demoDelayMs, MAX_DEMO_DELAY_MS);
+
+		try {
+			Thread.sleep(boundedDelayMs);
+		} catch (InterruptedException exception) {
+			Thread.currentThread().interrupt();
+			throw new IllegalStateException("Demo delay was interrupted", exception);
+		}
 	}
 
 }
